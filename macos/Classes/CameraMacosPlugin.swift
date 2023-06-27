@@ -130,9 +130,7 @@ public class CameraMacosPlugin: NSObject, FlutterPlugin, FlutterTexture, AVCaptu
                 result(FlutterError(code: "INVALID_ARGS", message: "", details: nil).toMap)
                 return
             }
-            DispatchQueue.main.async {
-                self.initCamera(arguments, result)
-            }
+            initCamera(arguments, result)
         case "takePicture":
             takePicture(result,pictureFormat)
         case "toggleTorch":
@@ -257,7 +255,6 @@ public class CameraMacosPlugin: NSObject, FlutterPlugin, FlutterTexture, AVCaptu
         self.requestPermission { granted in
             if granted {
                 self.isDestroyed = false
-                self.textureId = self.registry.register(self)
                 self.captureSession = AVCaptureSession()
                 self.captureSession.beginConfiguration()
                 var sessionPresetSet: Bool = false
@@ -584,10 +581,12 @@ public class CameraMacosPlugin: NSObject, FlutterPlugin, FlutterTexture, AVCaptu
                             "deviceId": audioDevice.uniqueID
                         ])
                     }
-                    
-                    let answer: [String : Any?] = ["textureId": self.textureId, "size": size, "devices": devices]
-                    result(answer)
-                    
+
+                    DispatchQueue.main.async {
+                        self.textureId = self.registry.register(self)
+                        let answer: [String : Any?] = ["textureId": self.textureId, "size": size, "devices": devices]
+                        result(answer)
+                    }
                 } catch(let error) {
                     result(FlutterError(code: "CAMERA_INITIALIZATION_ERROR", message: error.localizedDescription, details: nil).toFlutterResult)
                     return
