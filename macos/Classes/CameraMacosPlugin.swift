@@ -672,7 +672,7 @@ public class CameraMacosPlugin: NSObject, FlutterPlugin, FlutterTexture, AVCaptu
         if !isBufferAudio {
             latestBuffer = CMSampleBufferGetImageBuffer(sampleBuffer)
             DispatchQueue.main.async {
-                self.registry.textureFrameAvailable(textureId)
+                self.registry.textureFrameAvailable(self.textureId)
             }
         }
         
