@@ -84,7 +84,7 @@ public class CameraMacosPlugin: NSObject, FlutterPlugin, FlutterTexture, AVCaptu
                 return
             }
             DispatchQueue.main.async {
-                initCamera(arguments, result)
+                self.initCamera(arguments, result)
             }
         case "takePicture":
             takePicture(result)
