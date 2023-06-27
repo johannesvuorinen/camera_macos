@@ -83,7 +83,9 @@ public class CameraMacosPlugin: NSObject, FlutterPlugin, FlutterTexture, AVCaptu
                 result(FlutterError(code: "INVALID_ARGS", message: "", details: nil).toMap)
                 return
             }
-            initCamera(arguments, result)
+            DispatchQueue.main.async {
+                initCamera(arguments, result)
+            }
         case "takePicture":
             takePicture(result)
         case "startRecording":
