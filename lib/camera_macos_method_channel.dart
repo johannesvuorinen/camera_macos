@@ -1,4 +1,4 @@
-import 'package:camera_macos/camera_macos_view.dart';
+import 'dart:async';
 import 'package:camera_macos/camera_macos_arguments.dart';
 import 'package:camera_macos/camera_macos_device.dart';
 import 'package:camera_macos/camera_macos_file.dart';
@@ -13,6 +13,8 @@ class MethodChannelCameraMacOS extends CameraMacOSPlatform {
   /// The method channel used to interact with the native platform.
   @visibleForTesting
   final methodChannel = const MethodChannel('camera_macos');
+  static const EventChannel eventChannel = EventChannel('camera_macos/stream');
+  StreamSubscription? events;
 
   bool methodCallHandlerSet = false;
 
@@ -20,6 +22,8 @@ class MethodChannelCameraMacOS extends CameraMacOSPlatform {
   bool isDestroyed = false;
 
   Map<String, Function?> registeredCallbacks = {};
+
+  bool get isStreamingImageData => events != null && !events!.isPaused;
 
   /// Call this method to discover all camera devices.
   @override
@@ -52,19 +56,39 @@ class MethodChannelCameraMacOS extends CameraMacOSPlatform {
 
   /// Call this method to initialize camera. If you implement the widget in your widget tree, this method is useless.
   @override
-  Future<CameraMacOSArguments?> initialize({
-    /// initialize the camera with a video device. If null, the macOS default camera is chosen
-    String? deviceId,
+  Future<CameraMacOSArguments?> initialize(
+      {
+      /// initialize the camera with a video device. If null, the macOS default camera is chosen
+      String? deviceId,
 
-    /// initialize the camera with an audio device. If null, the macOS default microphone is chosen
-    String? audioDeviceId,
+      /// initialize the camera with an audio device. If null, the macOS default microphone is chosen
+      String? audioDeviceId,
 
-    /// Photo or Video
-    required CameraMacOSMode cameraMacOSMode,
+      /// Photo or Video
+      required CameraMacOSMode cameraMacOSMode,
 
-    /// Enable Audio Recording
-    bool enableAudio = true,
-  }) async {
+      /// format of the output photo
+      PictureFormat pictureFormat = PictureFormat.tiff,
+
+      /// format of the output photo
+      VideoFormat videoFormat = VideoFormat.mp4,
+
+      /// resolution of the output video/image
+      PictureResolution resolution = PictureResolution.max,
+
+      /// Enable Audio Recording
+      bool enableAudio = true,
+
+      /// Change the videos audio format type
+      AudioFormat audioFormat = AudioFormat.kAudioFormatAppleLossless,
+      AudioQuality audioQuality = AudioQuality.max,
+
+      /// Enable light
+      Torch toggleTorch = Torch.off,
+
+      /// Set camera orientation
+      CameraOrientation orientation =
+          CameraOrientation.orientation0deg}) async {
     try {
       final Map<String, dynamic>? result =
           await methodChannel.invokeMapMethod<String, dynamic>(
@@ -74,6 +98,13 @@ class MethodChannelCameraMacOS extends CameraMacOSPlatform {
           "audioDeviceId": audioDeviceId,
           "type": cameraMacOSMode.index,
           "enableAudio": enableAudio,
+          'resolution': resolution.name,
+          'quality': audioQuality.name,
+          'orientation': orientation.index * 90.0,
+          'torch': toggleTorch.index,
+          'pformat': pictureFormat.name,
+          'vformat': videoFormat.name,
+          'aformat': audioFormat.index,
         },
       );
       if (result == null) {
@@ -107,10 +138,13 @@ class MethodChannelCameraMacOS extends CameraMacOSPlatform {
 
   /// Call this method to take a picture.
   @override
-  Future<CameraMacOSFile?> takePicture() async {
+  Future<CameraMacOSFile?> takePicture(
+      {PictureFormat format = PictureFormat.tiff,
+      PictureResolution resolution = PictureResolution.max}) async {
     try {
-      final Map<String, dynamic>? result =
-          await methodChannel.invokeMapMethod<String, dynamic>('takePicture');
+      final Map<String, dynamic>? result = await methodChannel
+          .invokeMapMethod<String, dynamic>('takePicture',
+              {'format': format.name, 'resolution': resolution.name});
       if (result == null) {
         throw FlutterError("Invalid result");
       }
@@ -199,6 +233,7 @@ class MethodChannelCameraMacOS extends CameraMacOSPlatform {
   Future<bool?> destroy() async {
     try {
       final bool result = await methodChannel.invokeMethod('destroy') ?? false;
+      events?.cancel();
       isDestroyed = result;
       isRecording = false;
       return result;
@@ -230,5 +265,68 @@ class MethodChannelCameraMacOS extends CameraMacOSPlatform {
       default:
         break;
     }
+  }
+
+  @override
+  Future<void> startImageStream(
+      void Function(CameraImageData image) onAvailable) async {
+    events = eventChannel.receiveBroadcastStream().listen((data) {
+      onAvailable(CameraImageData(
+          width: data['width'],
+          height: data['height'],
+          bytesPerRow: data['bytesPerRow'],
+          bytes: Uint8List.fromList(data['data'])));
+    });
+  }
+
+  @override
+  Future<void> stopImageStream() async {
+    events?.cancel();
+  }
+
+  @override
+  Future<void> toggleTorch(Torch torch) {
+    return methodChannel.invokeMethod<void>(
+      'toggleTorch',
+      <String, dynamic>{
+        'torch': torch.index,
+      },
+    );
+  }
+
+  @override
+  Future<void> setFocusPoint(Offset point) {
+    assert(point.dx >= 0 && point.dx <= 1);
+    assert(point.dy >= 0 && point.dy <= 1);
+
+    return methodChannel.invokeMethod<void>(
+      'setFocusPoint',
+      <String, dynamic>{
+        'x': point.dx,
+        'y': point.dy,
+      },
+    );
+  }
+
+  @override
+  Future<void> setZoomLevel(double zoom) {
+    assert(zoom >= 0 && zoom <= 10.0);
+
+    return methodChannel.invokeMethod<void>(
+      'setZoom',
+      <String, dynamic>{
+        'zoom': zoom,
+      },
+    );
+  }
+
+  @override
+  Future<void> setOrientation(CameraOrientation orientation) {
+    return methodChannel.invokeMethod<void>(
+      'setOrientation',
+      <String, dynamic>{
+        'orientation': orientation.index,
+      },
+    );
   }
 }

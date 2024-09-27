@@ -1,4 +1,3 @@
-import 'package:camera_macos/camera_macos_view.dart';
 import 'package:camera_macos/camera_macos_arguments.dart';
 import 'package:camera_macos/camera_macos_file.dart';
 import 'package:camera_macos/camera_macos_method_channel.dart';
@@ -12,7 +11,8 @@ void main() {
 
   TestWidgetsFlutterBinding.ensureInitialized();
   setUp(() {
-    channel.setMockMethodCallHandler((MethodCall methodCall) async {
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, (MethodCall methodCall) async {
       switch (methodCall.method) {
         case "onVideoRecordingFinished":
           dynamic args = methodCall.arguments;
@@ -23,6 +23,7 @@ void main() {
         default:
           break;
       }
+      return;
     });
   });
 
@@ -134,6 +135,7 @@ void main() {
   );
 
   tearDown(() {
-    channel.setMockMethodCallHandler(null);
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, null);
   });
 }

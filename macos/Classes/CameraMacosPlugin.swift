@@ -1,11 +1,17 @@
 import Cocoa
 import FlutterMacOS
 import AVFoundation
+import Accelerate.vImage
+import CoreVideo.CVPixelBuffer
+import Accelerate.vecLib
+import CoreImage.CIContext
 
-public class CameraMacosPlugin: NSObject, FlutterPlugin, FlutterTexture, AVCaptureVideoDataOutputSampleBufferDelegate, AVCaptureAudioDataOutputSampleBufferDelegate, AVAssetWriterDelegate, AVCaptureFileOutputRecordingDelegate {
+public class CameraMacosPlugin: NSObject, FlutterPlugin, FlutterTexture, AVCaptureVideoDataOutputSampleBufferDelegate, AVCaptureAudioDataOutputSampleBufferDelegate, AVAssetWriterDelegate, AVCaptureFileOutputRecordingDelegate,
+    FlutterStreamHandler{
     
     let registry: FlutterTextureRegistry
     let outputChannel: FlutterMethodChannel!
+    var sink: FlutterEventSink!
     
     // Texture id of the camera preview
     var textureId: Int64!
@@ -49,11 +55,36 @@ public class CameraMacosPlugin: NSObject, FlutterPlugin, FlutterTexture, AVCaptu
     var factory: CameraMacOSNativeFactory!
     var previewLayer: AVCaptureVideoPreviewLayer!
 
+    var pictureFormat:NSBitmapImageRep.FileType? = NSBitmapImageRep.FileType.tiff
+    var videoFormat:AVFileType = AVFileType.mp4
+    var vstring:String = "mp4"
+
+    var resSize:NSSize? = nil
+    var settingsAssistant:AVOutputSettingsAssistant? = nil
+
+    var audioQuality:AVAudioQuality = AVAudioQuality.max
+    var audioFormat:AudioFormatID = kAudioFormatAppleLossless
+
+    var zoomLevel:Double = 1.0
+    var zoomPixelBuffer: CVImageBuffer?
+    
+    var orientation:CGFloat = 0
     
     init(_ registry: FlutterTextureRegistry, _ outputChannel: FlutterMethodChannel) {
         self.registry = registry
         self.outputChannel = outputChannel
         super.init()
+    }
+    // FlutterStreamHandler
+    public func onListen(withArguments arguments: Any?, eventSink events: @escaping FlutterEventSink) -> FlutterError? {
+        sink = events
+        return nil
+    }
+    
+    // FlutterStreamHandler
+    public func onCancel(withArguments arguments: Any?) -> FlutterError? {
+        sink = nil
+        return nil
     }
     
     public static func register(with registrar: FlutterPluginRegistrar) {
@@ -64,12 +95,33 @@ public class CameraMacosPlugin: NSObject, FlutterPlugin, FlutterTexture, AVCaptu
         let factory = CameraMacOSNativeFactory(messenger: registrar.messenger)
         registrar.register(factory, withId: "camera_macos_view")
         instance.factory = factory
+        
+        // Channel for communicating with platform plugins using event streams
+        let event = FlutterEventChannel(name:"camera_macos/stream", binaryMessenger: registrar.messenger)
+        registrar.addMethodCallDelegate(instance, channel: outputChannel)
+        event.setStreamHandler(instance)
     }
     
     public func copyPixelBuffer() -> Unmanaged<CVPixelBuffer>? {
         if latestBuffer == nil {
             return nil
         }
+        if self.sink != nil{
+            let u = imageFromSampleBuffer(imageBuffer: latestBuffer)!
+            let bytesPerRow = u.bytesPerRow
+            let width = Int(u.size.width)
+            let height = Int(u.size.height)
+            
+            let newData:Data = Data(bytes: u.bitmapData!, count: Int(bytesPerRow*height))
+            
+            self.sink([
+                "width": width,
+                "height": height,
+                "bytesPerRow": bytesPerRow,
+                "data": newData,
+            ] as [String:Any]);
+        }
+        
         return Unmanaged<CVPixelBuffer>.passRetained(latestBuffer)
     }
     
@@ -79,25 +131,76 @@ public class CameraMacosPlugin: NSObject, FlutterPlugin, FlutterTexture, AVCaptu
             let arguments = call.arguments as? Dictionary<String, Any> ?? [:]
             listDevices(arguments, result)
         case "initialize":
-            guard let arguments = call.arguments as? Dictionary<String, Any> else {
+            guard let arguments = call.arguments as? Dictionary<String, Any>
+            else {
                 result(FlutterError(code: "INVALID_ARGS", message: "", details: nil).toMap)
                 return
             }
             initCamera(arguments, result)
         case "takePicture":
-            takePicture(result)
+            takePicture(result,pictureFormat)
+        case "toggleTorch":
+            let arguments = call.arguments as? Dictionary<String, Any> ?? [:]
+            toggleTorch(arguments, result)
         case "startRecording":
             let arguments = call.arguments as? Dictionary<String, Any> ?? [:]
             startRecording(arguments, result)
         case "stopRecording":
             stopRecording(result)
+        case "setZoom":
+            let arguments = call.arguments as? Dictionary<String, Any> ?? [:]
+            zoomLevel = arguments["zoom"] as? Double ?? 1.0
+        case "setOrientation":
+            let arguments = call.arguments as? Dictionary<String, Any> ?? [:]
+            orientation = arguments["orientation"] as? Double ?? 0
         case "destroy":
             destroy(result)
+        case "setFocusPoint":
+            guard let arguments = call.arguments as? Dictionary<String, Any>
+            else {
+                result(FlutterError(code: "INVALID_ARGS", message: "", details: nil).toMap)
+                return
+            }
+            setFocusPoint(arguments, result)
         default:
             result(FlutterMethodNotImplemented)
         }
     }
-    
+
+    func setFocusPoint(_ arguments: Dictionary<String, Any>, _ result: @escaping FlutterResult) {
+        // var capturedVideoDevices: [AVCaptureDevice] = []
+        
+        // if #available(macOS 10.15, *) {
+        //     capturedVideoDevices = AVCaptureDevice.captureDevices(deviceTypes: [.builtInWideAngleCamera, .externalUnknown], mediaType: .video)
+        // } else {
+        //     capturedVideoDevices = AVCaptureDevice.captureDevices(mediaType: .video)
+        // }
+
+        // let deviceId = arguments["deviceType"] as? String;
+        // if let newCameraObject = capturedVideoDevices.first(where: { $0.uniqueID == deviceId }) {
+        //     let x = arguments["x"] as! Double;
+        //     let y = arguments["y"] as! Double;
+
+        //     let focusPoint: CGPoint = .init(x: x, y: y)
+        //     if newCameraObject.isFocusPointOfInterestSupported {
+        //         newCameraObject.focusPointOfInterest = focusPoint
+        //     }
+        // }
+
+        let x = arguments["x"] as! Double;
+        let y = arguments["y"] as! Double;
+
+        let focusPoint: CGPoint = .init(x: x, y: y)
+        if videoDevice.isFocusPointOfInterestSupported {
+            videoDevice.focusPointOfInterest = focusPoint
+            videoDevice.unlockForConfiguration()
+            result(nil)
+        }
+        else{
+            result(["error": FlutterError(code: "SET_FOCUSPOINT_ERROR", message: "This device does not have focuspoint support.", details: nil).toMap])
+        }
+    }
+
     func requestPermission(completionHandler: @escaping (Bool) -> Void) {
         if #available(macOS 10.14, *) {
             AVCaptureDevice.requestAccess(for: .video, completionHandler: completionHandler)
@@ -108,9 +211,9 @@ public class CameraMacosPlugin: NSObject, FlutterPlugin, FlutterTexture, AVCaptu
     
     func generateVideoFileURL(randomGUID: Bool = false) -> URL {
         let paths = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)
-        var fileUrl = paths[0].appendingPathComponent("output.mp4")
+        var fileUrl = paths[0].appendingPathComponent("output."+vstring)
         if randomGUID {
-            fileUrl = paths[0].appendingPathComponent(UUID().uuidString + ".mp4")
+            fileUrl = paths[0].appendingPathComponent(UUID().uuidString + "."+vstring)
         }
         return fileUrl
     }
@@ -147,7 +250,7 @@ public class CameraMacosPlugin: NSObject, FlutterPlugin, FlutterTexture, AVCaptu
             }
         }
     }
-    
+
     func initCamera(_ arguments: Dictionary<String, Any>, _ result: @escaping FlutterResult) {
         if let captureSession = self.captureSession, captureSession.isRunning {
             captureSession.stopRunning()
@@ -198,6 +301,131 @@ public class CameraMacosPlugin: NSObject, FlutterPlugin, FlutterTexture, AVCaptu
                     newCameraObject = capturedVideoDevices.first
                 }
                 
+                self.orientation = arguments["orientation"] as? Double ?? 0
+                
+                switch arguments["pformat"] as! String{
+                    case "jpg":
+                        self.pictureFormat = NSBitmapImageRep.FileType.jpeg
+                        break
+                    case "jepg":
+                        self.pictureFormat = NSBitmapImageRep.FileType.jpeg2000
+                        break
+                    case "bmp":
+                        self.pictureFormat = NSBitmapImageRep.FileType.bmp
+                        break
+                    case "png":
+                        self.pictureFormat = NSBitmapImageRep.FileType.png
+                        break
+                    case "raw":
+                        self.pictureFormat = nil
+                        break
+                    default:
+                        self.pictureFormat = NSBitmapImageRep.FileType.tiff
+                        break
+                }
+                switch arguments["vformat"] as! String{
+                    case "m4v":
+                        self.videoFormat = AVFileType.m4v
+                        self.vstring = "m4v"
+                        break
+                    case "mov":
+                        self.videoFormat = AVFileType.mov
+                        self.vstring = "mov"
+                        break
+                    default:
+                        self.videoFormat = AVFileType.mp4
+                        self.vstring = "mp4"
+                        break
+                }
+                switch arguments["resolution"] as! String{
+                    case "low":
+                        self.resSize = NSMakeSize(CGFloat(640), CGFloat(480))
+                        self.settingsAssistant = AVOutputSettingsAssistant(preset: .preset640x480)
+                        break
+                    case "medium":
+                        self.resSize = NSMakeSize(CGFloat(960), CGFloat(540))
+                        self.settingsAssistant = AVOutputSettingsAssistant(preset: .preset960x540)
+                        break
+                    case "high":
+                        self.resSize = NSMakeSize(CGFloat(1280), CGFloat(720))
+                        self.settingsAssistant = AVOutputSettingsAssistant(preset: .preset1280x720)
+                        break
+                    case "veryHigh":
+                        self.resSize = NSMakeSize(CGFloat(1920), CGFloat(1080))
+                        self.settingsAssistant = AVOutputSettingsAssistant(preset: .preset1920x1080)
+                        break
+                    case "ultraHigh":
+                        self.resSize = NSMakeSize(CGFloat(3840), CGFloat(2160))
+                        self.settingsAssistant = AVOutputSettingsAssistant(preset: .preset3840x2160)
+                        break
+                    default:
+                        self.resSize = nil
+                        self.settingsAssistant = AVOutputSettingsAssistant(preset: .preset1280x720)
+                        break
+                }
+                switch arguments["quality"] as! String{
+                    case "min":
+                        self.audioQuality = AVAudioQuality.min
+                        break
+                    case "low":
+                        self.audioQuality = AVAudioQuality.low
+                        break
+                    case "medium":
+                        self.audioQuality = AVAudioQuality.medium
+                        break
+                    case "high":
+                        self.audioQuality = AVAudioQuality.high
+                        break
+                    default:
+                        self.audioQuality = AVAudioQuality.max
+                        break
+                }
+
+                let afids:[AudioFormatID] = [
+                    kAudioFormat60958AC3,
+                    kAudioFormatAC3,
+                    kAudioFormatAES3,
+                    kAudioFormatALaw,
+                    kAudioFormatAMR,
+                    kAudioFormatAMR_WB,
+                    kAudioFormatAppleIMA4,
+                    kAudioFormatAppleLossless,
+                    kAudioFormatAudible,
+                    kAudioFormatDVIIntelIMA,
+                    kAudioFormatEnhancedAC3,
+                    kAudioFormatFLAC,
+                    kAudioFormatLinearPCM,
+                    kAudioFormatMACE3,
+                    kAudioFormatMACE6,
+                    kAudioFormatMIDIStream,
+                    kAudioFormatMPEG4AAC,
+                    kAudioFormatMPEG4AAC_ELD,
+                    kAudioFormatMPEG4AAC_ELD_SBR,
+                    kAudioFormatMPEG4AAC_ELD_V2,
+                    kAudioFormatMPEG4AAC_HE,
+                    kAudioFormatMPEG4AAC_HE_V2,
+                    kAudioFormatMPEG4AAC_LD,
+                    kAudioFormatMPEG4AAC_Spatial,
+                    kAudioFormatMPEG4CELP,
+                    kAudioFormatMPEG4HVXC,
+                    kAudioFormatMPEG4TwinVQ,
+                    kAudioFormatMPEGD_USAC,
+                    kAudioFormatMPEGLayer1,
+                    kAudioFormatMPEGLayer2,
+                    kAudioFormatMPEGLayer3,
+                    kAudioFormatMicrosoftGSM,
+                    kAudioFormatOpus,
+                    kAudioFormatParameterValueStream,
+                    kAudioFormatQDesign,
+                    kAudioFormatQDesign2,
+                    kAudioFormatQUALCOMM,
+                    kAudioFormatTimeCode,
+                    kAudioFormatULaw,
+                    kAudioFormatiLBC,
+                ]
+                
+                self.audioFormat = afids[arguments["aformat"] as! Int]
+
                 guard let newCameraObject: AVCaptureDevice = newCameraObject else {
                     result(FlutterError(code: "CAMERA_INITIALIZATION_ERROR", message: "Could not find a suitable camera on this device", details: nil).toFlutterResult)
                     return
@@ -205,18 +433,23 @@ public class CameraMacosPlugin: NSObject, FlutterPlugin, FlutterTexture, AVCaptu
                 self.videoDevice = newCameraObject
                 do {
                     let focusPoint: CGPoint = .init(x: 0.5, y: 0.5)
+                    let ti = arguments["torch"] as? Int
+                    let torch:AVCaptureDevice.TorchMode = (ti == nil || ti == 0) ? .off : (ti == 1 ? .on : .auto)
                     try newCameraObject.lockForConfiguration()
-                    if newCameraObject.isFocusPointOfInterestSupported {
-                        newCameraObject.focusPointOfInterest = focusPoint
-                    }
                     if newCameraObject.isFocusModeSupported(.autoFocus) {
                         newCameraObject.focusMode = .autoFocus
+                    }
+                    if newCameraObject.isFocusPointOfInterestSupported {
+                        newCameraObject.focusPointOfInterest = focusPoint
                     }
                     if newCameraObject.isExposureModeSupported(.continuousAutoExposure) {
                         newCameraObject.exposureMode = AVCaptureDevice.ExposureMode.continuousAutoExposure
                     }
                     if newCameraObject.isExposurePointOfInterestSupported {
                         newCameraObject.exposurePointOfInterest = focusPoint
+                    }
+                    if newCameraObject.isTorchModeSupported(torch){
+                        newCameraObject.torchMode = torch
                     }
                     newCameraObject.unlockForConfiguration()
                     
@@ -256,7 +489,7 @@ public class CameraMacosPlugin: NSObject, FlutterPlugin, FlutterTexture, AVCaptu
                     var outputInitialized: Bool = false
                     
                     self.useMovieFileOutput = arguments["useMovieFileOutput"] as? Bool ?? false
-//                    #warning("forced to use MovieFileOutput for testing purposes")
+                    // #warning("forced to use MovieFileOutput for testing purposes")
                     
                     // Add video buffering output
                     
@@ -268,6 +501,11 @@ public class CameraMacosPlugin: NSObject, FlutterPlugin, FlutterTexture, AVCaptu
                                 if connection.isVideoMirroringSupported {
                                     connection.isVideoMirrored = true
                                 }
+//                                #if compiler(<5.8.1)
+                                    if #available(macOS 14.0, *), connection.isVideoRotationAngleSupported(self.orientation){
+                                        connection.videoRotationAngle = self.orientation
+                                    }
+//                                #endif
                             }
                             outputInitialized = true
                         }
@@ -282,6 +520,11 @@ public class CameraMacosPlugin: NSObject, FlutterPlugin, FlutterTexture, AVCaptu
                                 if connection.isVideoMirroringSupported {
                                     connection.isVideoMirrored = true
                                 }
+//                                #if compiler(<5.8.1)
+                                if #available(macOS 14.0, *),  connection.isVideoRotationAngleSupported(self.orientation){
+                                        connection.videoRotationAngle = self.orientation
+                                    }
+//                                #endif
                             }
                             outputInitialized = true
                         }
@@ -355,16 +598,33 @@ public class CameraMacosPlugin: NSObject, FlutterPlugin, FlutterTexture, AVCaptu
         }
     }
     
-    func takePicture(_ result: @escaping FlutterResult) {
-        guard let imageBuffer = latestBuffer, let nsImage = imageFromSampleBuffer(imageBuffer: imageBuffer), let imageData = nsImage.tiffRepresentation, !imageData.isEmpty else {
-            result(["error": FlutterError(code: "PHOTO_OUTPUT_ERROR", message: "imageData is empty or invalid", details: nil).toMap])
-            return
+    func takePicture(_ result: @escaping FlutterResult, _ format: NSBitmapImageRep.FileType?) {
+        if format != nil{
+            guard let imageBuffer = latestBuffer, let nsImage = imageFromSampleBuffer(imageBuffer: imageBuffer),
+                    let imageData = nsImage.representation(
+                    using: format!,
+                    properties: [
+                        NSBitmapImageRep.PropertyKey.currentFrame: NSBitmapImageRep.PropertyKey.currentFrame.self
+                    ]
+                ), !imageData.isEmpty else {
+                result(["error": FlutterError(code: "PHOTO_OUTPUT_ERROR", message: "imageData is empty or invalid", details: nil).toMap])
+                return
+            }
+            result(["imageData": imageData, "error": nil])
         }
-        result(["imageData": imageData, "error": nil])
+        else{
+            let nsImage = imageFromSampleBuffer(imageBuffer: latestBuffer)
+            if nsImage != nil{
+                let imageData = Data(bytes: nsImage!.bitmapData!, count: Int(nsImage!.bytesPerRow*Int(nsImage!.size.height)))
+                result(["imageData": imageData, "error": nil])
+            }else {
+                result(["error": FlutterError(code: "PHOTO_OUTPUT_ERROR", message: "imageData is empty or invalid", details: nil).toMap])
+                return
+            }
+        }
     }
     
-    func imageFromSampleBuffer(imageBuffer: CVPixelBuffer) -> NSImage? {
-        
+    func imageFromSampleBuffer(imageBuffer: CVPixelBuffer) -> NSBitmapImageRep? {
         CVPixelBufferLockBaseAddress(imageBuffer, CVPixelBufferLockFlags(rawValue: 0))
         
         guard let baseAddress: UnsafeMutableRawPointer = CVPixelBufferGetBaseAddress(imageBuffer) else {
@@ -377,18 +637,78 @@ public class CameraMacosPlugin: NSObject, FlutterPlugin, FlutterTexture, AVCaptu
         let colorSpace = CGColorSpaceCreateDeviceRGB();
         
         // Create a bitmap graphics context with the sample buffer data
-        guard let context = CGContext(data: baseAddress, width: width, height: height, bitsPerComponent: 8, bytesPerRow: bytesPerRow, space: colorSpace, bitmapInfo: CGBitmapInfo.byteOrder32Little.rawValue | CGImageAlphaInfo.premultipliedFirst.rawValue), let quartzImage = context.makeImage() else {
+        guard let context = CGContext(
+            data: baseAddress,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: bytesPerRow,
+            space: colorSpace,
+            bitmapInfo: CGBitmapInfo.byteOrder32Little.rawValue | CGImageAlphaInfo.premultipliedFirst.rawValue
+        )else {
             return nil
         }
+        let quartzImage = context.makeImage()!
         
         CVPixelBufferUnlockBaseAddress(imageBuffer, CVPixelBufferLockFlags(rawValue: 0))
         
         // Create an image object from the Quartz image
-        let image = NSImage(cgImage:quartzImage, size: NSSize(width: width, height: height));
-        
-        return (image);
+        if resSize == nil || resSize!.width >= CGFloat(width){
+            if zoomLevel > 1.0{
+                resSize = CGSize(width:width,height:height)
+                return NSBitmapImageRep(cgImage: zoomCGImage(quartzImage))
+            }
+            else{
+                return NSBitmapImageRep(cgImage:quartzImage)
+            }
+            
+        }
+
+        if zoomLevel > 1.0{
+            return NSBitmapImageRep(cgImage: zoomCGImage(resizeCGImage(quartzImage)!))
+        }
+        else{
+            return NSBitmapImageRep(cgImage: resizeCGImage(quartzImage)!)
+        }
     }
-    
+    func resizeCGImage(_ self:CGImage) -> CGImage? {
+        let size = CGSize(width:resSize!.width,height:resSize!.height)
+        let width: Int = Int(size.width)
+        let height: Int = Int(size.height)
+
+        let bytesPerPixel = self.bitsPerPixel / self.bitsPerComponent
+        let destBytesPerRow = width * bytesPerPixel
+
+
+        guard let colorSpace = self.colorSpace else { return nil }
+        guard let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: self.bitsPerComponent, bytesPerRow: destBytesPerRow, space: colorSpace, bitmapInfo: self.alphaInfo.rawValue) else { return nil }
+
+        context.interpolationQuality = .high
+        context.draw(self, in: CGRect(x: 0, y: 0, width: width, height: height))
+
+        return context.makeImage()
+    }
+
+    func zoomCGImage(_ image: CGImage) -> CGImage {
+        let x = (resSize!.width-resSize!.width/zoomLevel)/2
+        let y = (resSize!.height-resSize!.height/zoomLevel)/2
+        let toRect = CGRect(x:x,y:y,width:resSize!.width/zoomLevel,height:resSize!.height/zoomLevel)
+        return resizeCGImage(image.cropping(to: toRect)!)!
+    }
+
+    func toggleTorch(_ arguments: Dictionary<String, Any>, _ result: @escaping FlutterResult) {
+        let ti = arguments["torch"] as? Int
+        let torch:AVCaptureDevice.TorchMode = (ti == nil || ti == 0) ? .off : (ti == 1 ? .on : .auto)
+        if videoDevice.isTorchModeSupported(torch){
+            videoDevice.torchMode = torch
+            videoDevice.unlockForConfiguration()
+            
+            result(nil)
+        }
+        else{
+            result(["error": FlutterError(code: "TOGGLE_TOURCH_ERROR", message: "This device does not have a light to turn on/off.", details: nil).toMap])
+        }
+    }
     func startRecording(_ arguments: Dictionary<String, Any>, _ result: @escaping FlutterResult) {
         // Set up the AVAssetWriter (to write to file)
         do {
@@ -426,8 +746,9 @@ public class CameraMacosPlugin: NSObject, FlutterPlugin, FlutterTexture, AVCaptu
                     self.isRecording = true
                     self.savedResult = result
                     movieOutput.startRecording(to: fileUrl, recordingDelegate: self)
-                } else {
-                    self.videoWriter = try AVAssetWriter(outputURL: fileUrl, fileType: .mp4)
+                } 
+                else {
+                    self.videoWriter = try AVAssetWriter(outputURL: fileUrl, fileType: videoFormat)
                     print("Setting up AVAssetWriter")
 
                     guard let videoWriter = self.videoWriter else {
@@ -436,7 +757,6 @@ public class CameraMacosPlugin: NSObject, FlutterPlugin, FlutterTexture, AVCaptu
                     }
                     
                     videoWriter.shouldOptimizeForNetworkUse = true
-                    let settingsAssistant = AVOutputSettingsAssistant(preset: .preset1280x720)
                     
                     videoOutputQueue = DispatchQueue(label: "videoQueue", qos: .utility, attributes: .concurrent, autoreleaseFrequency: DispatchQueue.AutoreleaseFrequency.inherit, target: DispatchQueue.global())
                     guard let videoOutputQueue = videoOutputQueue else {
@@ -458,10 +778,9 @@ public class CameraMacosPlugin: NSObject, FlutterPlugin, FlutterTexture, AVCaptu
                             videoWriterVideoInputSettings[AVVideoCodecKey] = AVVideoCodecH264
                         }
                         
-                        if let settingsAssistant = settingsAssistant, let videoSettings = settingsAssistant.videoSettings, videoWriter.canApply(outputSettings: videoSettings, forMediaType: .video) {
+                        if let settingsAssistant = self.settingsAssistant, let videoSettings = settingsAssistant.videoSettings, videoWriter.canApply(outputSettings: videoSettings, forMediaType: .video) {
                             videoWriterVideoInputSettings = videoSettings
                         }
-
                         
                         let videoWriterVideoInput = AVAssetWriterInput(mediaType: .video, outputSettings: videoWriterVideoInputSettings)
                         videoWriterVideoInput.expectsMediaDataInRealTime = true
@@ -473,13 +792,14 @@ public class CameraMacosPlugin: NSObject, FlutterPlugin, FlutterTexture, AVCaptu
                         // Add Video Writer Audio Input
                         if self.enableAudio {
                             var videoWriterAudioInputSettings : [String : Any] = [
-                                AVFormatIDKey : kAudioFormatMPEG4AAC,
+                                AVFormatIDKey : self.audioFormat,
                                 AVSampleRateKey : 44100,
                                 AVEncoderBitRateKey : 64000,
-                                AVNumberOfChannelsKey: 1
+                                AVNumberOfChannelsKey: 1,
+                                AVEncoderAudioQualityKey: self.audioQuality
                             ]
                             
-                            if let settingsAssistant = settingsAssistant, let audioSettings = settingsAssistant.audioSettings, videoWriter.canApply(outputSettings: audioSettings, forMediaType: .audio) {
+                            if let settingsAssistant = self.settingsAssistant, let audioSettings = settingsAssistant.audioSettings, videoWriter.canApply(outputSettings: audioSettings, forMediaType: .audio) {
                                 videoWriterAudioInputSettings = audioSettings
                             }
                             
@@ -592,7 +912,7 @@ public class CameraMacosPlugin: NSObject, FlutterPlugin, FlutterTexture, AVCaptu
                                 return
                             }
                             print("Video Recorded And Saved At: \(videoOutputFileURL.absoluteURL)")
-                            result(["videoData": videoData, "url": videoOutputFileURL.absoluteURL.path, "error": nil])
+                            result(["videoData": videoData, "url": videoOutputFileURL.absoluteURL.path, "error": nil] as [String:Any?])
                         default:
                             result(FlutterError(code: "ASSET_WRITER_FAIL", message: "File not saved at \(videoOutputFileURL.absoluteURL.path) - \(videoWriter.error?.localizedDescription ?? "")", details: nil).toFlutterResult)
                         }
@@ -690,7 +1010,7 @@ public class CameraMacosPlugin: NSObject, FlutterPlugin, FlutterTexture, AVCaptu
                     if self.canWrite {
                         let result: Bool = audio.append(sampleBuffer)
                         if(!result && videoWriter.status == .failed) {
-                            print("Failed to write audio input: AVAssetWriter Error - " + videoWriter.error.debugDescription + " - Frame Order: " + "Previous: \(self.latestAudioFrameWrittenTimeStamp) - Current: \(time)")
+                            print("Failed to write audio input: AVAssetWriter Error - " + videoWriter.error.debugDescription + " - Frame Order: " + "Previous: \(String(describing: self.latestAudioFrameWrittenTimeStamp)) - Current: \(time)")
                         } else if result {
                             self.latestAudioFrameWrittenTimeStamp = time
                         }
@@ -705,7 +1025,7 @@ public class CameraMacosPlugin: NSObject, FlutterPlugin, FlutterTexture, AVCaptu
                     if self.canWrite {
                         let result: Bool = camera.append(sampleBuffer)
                         if !result && videoWriter.status == .failed {
-                            print("Failed to write video input: AVAssetWriter Error - " + videoWriter.error.debugDescription + " - Frame Order: " + "Previous: \(self.latestVideoFrameWrittenTimeStamp) - Current: \(time)")
+                            print("Failed to write video input: AVAssetWriter Error - " + videoWriter.error.debugDescription + " - Frame Order: " + "Previous: \(String(describing: self.latestVideoFrameWrittenTimeStamp)) - Current: \(time)")
                         } else if result {
                             self.latestVideoFrameWrittenTimeStamp = time
                         }
@@ -737,7 +1057,29 @@ public class CameraMacosPlugin: NSObject, FlutterPlugin, FlutterTexture, AVCaptu
             return
         }
         print("Video Recorded And Saved At: \(outputFileURL.absoluteURL)")
-        savedResult(["videoData": videoData, "url": outputFileURL.absoluteURL.path, "error": nil])
+        savedResult(["videoData": videoData, "url": outputFileURL.absoluteURL.path, "error": nil] as [String:Any?])
     }
     
+}
+
+extension UnsafeMutableRawPointer {
+    // Converts the vImage buffer to CVPixelBuffer
+    func toCVPixelBuffer(pixelBuffer: CVPixelBuffer, targetWith: Int, targetHeight: Int, targetImageRowBytes: Int) -> CVPixelBuffer? {
+        let pixelBufferType = CVPixelBufferGetPixelFormatType(pixelBuffer)
+        let releaseCallBack: CVPixelBufferReleaseBytesCallback = {mutablePointer, pointer in
+            if let pointer = pointer {
+                free(UnsafeMutableRawPointer(mutating: pointer))
+            }
+        }
+
+        var targetPixelBuffer: CVPixelBuffer?
+        let conversionStatus = CVPixelBufferCreateWithBytes(nil, targetWith, targetHeight, pixelBufferType, self, targetImageRowBytes, releaseCallBack, nil, nil, &targetPixelBuffer)
+
+        guard conversionStatus == kCVReturnSuccess else {
+            free(self)
+            return nil
+        }
+
+        return targetPixelBuffer
+    }
 }
