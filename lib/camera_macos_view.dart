@@ -55,6 +55,9 @@ class CameraMacOSView extends StatefulWidget {
   /// The Orientation of the camera
   final CameraOrientation orientation;
 
+  /// Fullscreen
+  final bool fullscreen;
+
   final bool isVideoMirrored;
 
   const CameraMacOSView({
@@ -75,6 +78,7 @@ class CameraMacOSView extends StatefulWidget {
     this.audioFormat = AudioFormat.kAudioFormatAppleLossless,
     this.toggleTorch = Torch.off,
     this.orientation = CameraOrientation.orientation0deg,
+    this.fullscreen = true,
     this.isVideoMirrored = true,
   }) : super(key: key);
 
@@ -161,8 +165,8 @@ class CameraMacOSViewState extends State<CameraMacOSView> {
         };
         return ClipRect(
           child: SizedBox(
-            width: MediaQuery.of(context).size.width,
-            height: MediaQuery.of(context).size.height,
+            width: widget.fullscreen ? MediaQuery.of(context).size.width : null,
+            height: widget.fullscreen ? MediaQuery.of(context).size.height : null,
             child: FittedBox(
               fit: widget.fit,
               child: SizedBox(
