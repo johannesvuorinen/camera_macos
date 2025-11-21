@@ -993,8 +993,12 @@ public class CameraMacosPlugin: NSObject, FlutterPlugin, FlutterTexture, AVCaptu
         
         if !isBufferAudio {
             latestBuffer = CMSampleBufferGetImageBuffer(sampleBuffer)
-            DispatchQueue.main.async {
-                self.registry.textureFrameAvailable(self.textureId)
+            let currentTextureId = self.textureId
+            DispatchQueue.main.async { [weak self] in
+                guard let strongSelf = self, let textureId = currentTextureId else {
+                    return
+                }
+                strongSelf.registry.textureFrameAvailable(textureId)
             }
         }
         
